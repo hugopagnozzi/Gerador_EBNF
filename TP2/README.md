@@ -1,6 +1,6 @@
-aluno: <2022.1905.023-5>
-aluno: <2022.1905.068-5>
-uso_ia: <sim>
+**aluno**:  2022.1905.023-5 \
+**aluno**:  2022.1905.068-5 \
+**uso_ia**: sim 
 
 # Compiladores I — Trabalho Prático 2: Gerador de Analisadores Sintáticos Descendentes Recursivos
 
