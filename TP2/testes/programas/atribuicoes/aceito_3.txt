@@ -1,0 +1,3 @@
+_variavel = 0;
+valor2 = 42;
+TOTAL = 999;

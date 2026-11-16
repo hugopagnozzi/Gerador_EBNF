@@ -1,0 +1,577 @@
+/*
+ * microc.flex
+ *
+ * Esqueleto do analisador lexico (scanner) para a linguagem Micro C.
+ * Disciplina: Compiladores I - FACOM
+ *
+ * Compilacao:
+ *      flex microc.flex
+ *      gcc lex.yy.c -o lexer
+ *
+ * Uso:
+ *      ./lexer test.mc
+ */
+
+%option prefix="microc_yy" noyywrap
+
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ---------------------------------------------------------------------
+ * 1. VOCABULARIO DE TOKENS (equivalente a tokens.h)
+ * ------------------------------------------------------------------- */
+
+#include "tokens.h"
+
+/* Nomes dos tokens, usados apenas pelo main() de teste abaixo para
+ * imprimir o tipo de cada token de forma legivel. Mantenha esta lista
+ * na MESMA ORDEM do enum TokenType. */
+
+static const char *nome_token[] = 
+{
+    "UNDEF", "ID", "END_OF_FILE",
+    "INTEGERCONST", "CHARCONST", "STRINGCONST",
+    "PLUS", "MINUS", "MUL", "DIV", "MOD",
+    "EQ", "NEQ", "LT", "GT", "LEQ", "GEQ", "AND", "OR", "NOT",
+    "ASSIGN", "SEMICOLON", "COMMA", "LPAREN", "RPAREN",
+    "LBRACE", "RBRACE", "LBRACKET", "RBRACKET",
+    "MAIN", "IF", "ELSE", "FOR", "RETURN", "INT", "CHAR", "PRINT"
+};
+
+/* Número de tokens, usado para identificar a palavra reservada. */
+
+static const int num_tokens = 37;
+
+/* Número de palavras reservadas, usado para percorrer a lista de palavras
+ * reservadas e identificar a palavra reservada. */
+
+static const int num_palavras_reservadas = 8;
+
+/* Lista de palavras reservadas, usada para verificação quando o token for
+ * um ID. */
+
+static const char *palavras_reservadas[] = 
+{
+    "main", "if", "else", "for", "return", "int", "char", "print"
+};
+
+/* Valor semantico do token corrente. */
+
+YYSTYPE microc_yylval;
+
+/* Nos da lista encadeada usada como tabela de strings. */
+
+typedef struct Node
+{
+    char *lexema;           /* lexemas armazenados */
+    struct Node *prox_no;   /* ponteiro para o proximo no */
+} 
+Node;
+
+Node *tabela_strings = NULL;
+
+/* Funcoes para manipular a tabela de strings */
+
+void imprime_tabela(void)
+{
+    Node *p;
+
+    for(p = tabela_strings; p != NULL; p = p->prox_no)
+    {
+        printf("%s\n", p->lexema);
+    }
+}
+
+Node* busca_tabela(char *lexema)
+{
+    Node *p = tabela_strings;
+
+    while(p != NULL)
+    {
+        if(strcmp(p->lexema, lexema) == 0)
+        {
+            return p;   /* Encontrou */
+        }
+        p = p->prox_no;
+    }
+    return NULL;    /* Nao encontrou */
+}
+
+char* add_tabela(char *lexema)
+{
+    Node *p;
+    Node *novo;
+
+    /* Busca na tabela para nao duplicar lexemas */
+
+    p = busca_tabela(lexema);
+
+    if(p != NULL)
+    {
+        return p->lexema;
+    }
+
+    /* Cria o novo no */
+
+    novo = (Node *) malloc(sizeof(Node));
+
+    if(novo == NULL)
+    {
+        fprintf(stderr, "Erro: Falha ao alocar memoria.\n");
+        exit(1);
+    }
+
+    novo->prox_no = NULL;
+    novo->lexema = strdup(lexema);
+
+    /* Insere o novo no na tabela de strings */
+
+    if(tabela_strings == NULL)
+    {
+        tabela_strings = novo;
+    }
+    else
+    {
+        p = tabela_strings;
+        while(p->prox_no != NULL)
+        {
+            p = p->prox_no;
+        }
+        p->prox_no = novo;
+    }
+    return novo->lexema;
+}
+
+void microc_liberar_tabela_strings(void)
+{
+    Node *p;
+    Node *proximo;
+
+    p = tabela_strings;
+
+    while (p != NULL)
+    {
+        proximo = p->prox_no;
+        free(p->lexema);
+        free(p);
+        p = proximo;
+    }
+
+    tabela_strings = NULL;
+}
+
+/* Funcoes auxiliares para preencher microc_yylval.symbol com um ponteiro para
+ * o texto reconhecido (yytext). */
+
+static void guarda_lexema(void) 
+{
+    microc_yylval.symbol = add_tabela(yytext);
+}
+
+static void guarda_lexema_str_char(void) 
+{
+    int i;
+    int j = 0;
+    int tam = strlen(yytext);
+    char *dest = malloc(tam);   /* Aloca espaço suficiente (será menor ou igual a yytext) */
+
+    if(dest == NULL)
+    {
+        fprintf(stderr, "Erro: Falha ao alocar memoria.\n");
+        exit(1);
+    }
+
+    /* Ignora a primeira e a última aspa */
+
+    for(i = 1; i < tam-1; i++)
+    {
+        if(yytext[i] == '\\' &&  i+1 < tam-1) 
+        {
+            i++;    /* Pula a barra */
+            switch(yytext[i]) 
+            {
+                case 'n': 
+                    dest[j] = '\n'; 
+                    j++;
+                    break;
+                case 't': 
+                    dest[j] = '\t'; 
+                    j++;
+                    break;
+                case '\\': 
+                    dest[j] = '\\'; 
+                    j++;
+                    break;
+                case '\"': 
+                    dest[j] = '\"'; 
+                    j++;
+                    break;
+                default:  
+                    dest[j] = yytext[i]; 
+                    j++;
+                    break;
+            }
+        } 
+        else 
+        {
+            dest[j] = yytext[i];
+            j++;
+        }
+    }
+    dest[j] = '\0';     /* Fecha a string */
+    microc_yylval.symbol = add_tabela(dest);
+    free(dest);
+}
+
+/* Linha atual e coluna atual do arquivo-fonte sendo processado. */
+
+int linha_atual = 1;
+int linha_token = 1;
+int coluna_atual = 1;
+
+/* Linha e coluna indicando onde o erro lexico comecou. */
+
+int linha_erro = 1;
+int coluna_erro = 1;
+
+#define YY_USER_ACTION linha_token = linha_atual;
+%}
+
+/* -----------------------------------------------------------------------
+ * 2. SECAO DE DEFINICOES
+ * ------------------------------------------------------------------- */
+
+DIGIT       [0-9]
+LETRA       [a-zA-Z_]
+ALFANUM     [a-zA-Z0-9_]
+ESCAPE      \\[nt"\\]
+
+%x COMMENT
+%x STRING
+%x CHAR
+
+%%
+
+ /* -----------------------------------------------------------------------
+  * 3. SECAO DE REGRAS
+  * --------------------------------------------------------------------- */
+
+ /* --- Fim de arquivo -----------------------------------------------------
+  * Tratada explicitamente (em vez de depender do retorno automatico 0
+  * do flex), pois o token UNDEF tambem vale 0 no enum TokenType -- se
+  * dependessemos do comportamento padrao, um erro lexico seria
+  * confundido com o fim do arquivo pelo main() de teste abaixo. */
+
+<<EOF>>             {
+                        linha_token = linha_atual;
+
+                        if(YY_START == STRING)
+                        {
+                            BEGIN(INITIAL);
+                            microc_yylval.error_msg = "EOF em STRING";
+                            coluna_erro = coluna_atual;
+                            linha_erro = linha_atual;
+                            return UNDEF;
+                        }
+                        if(YY_START == CHAR)
+                        {
+                            BEGIN(INITIAL);
+                            microc_yylval.error_msg = "EOF em CHAR";
+                            coluna_erro = coluna_atual;
+                            linha_erro = linha_atual;
+                            return UNDEF;
+                        }
+                        if(YY_START == COMMENT)
+                        {
+                            BEGIN(INITIAL);
+                            microc_yylval.error_msg = "EOF em comentario";
+                            coluna_erro = coluna_atual;
+                            linha_erro = linha_atual;
+                            return UNDEF;
+                        }
+                        return END_OF_FILE; 
+                    }
+
+ /* --- Espacos em branco e quebras de linha ---------------------------- */
+
+\n                  { 
+                        linha_atual++;
+                        coluna_atual = 1;
+                    }
+
+[ \t\r]+            { 
+                        coluna_atual += yyleng; 
+                    }
+
+ /* --- Comentarios ------------------------------------------------------
+  * Estes ja estao implementados como exemplo de uso de estados (%x) e
+  * de tratamento de erro via EOF dentro de um estado especial. */
+
+"//".*              { 
+                        /* comentario de linha: ignora ate o fim da linha */ 
+                    }
+
+"/*"                { 
+                        BEGIN(COMMENT);
+                        linha_erro = linha_atual;
+                        coluna_erro = coluna_atual;
+                        coluna_atual += yyleng;
+                    }
+
+<COMMENT>"*/"       { 
+                        BEGIN(INITIAL); 
+                        coluna_atual += yyleng;
+                    }
+
+<COMMENT>\n         { 
+                        linha_atual++;
+                        coluna_atual = 1;
+                    }
+
+<COMMENT>.          { 
+                        coluna_atual += yyleng; 
+                    }
+
+ /* Fechamento de comentario sem abertura correspondente. */
+
+"*/"                {
+                        microc_yylval.error_msg = "Comentario nao iniciado";
+                        coluna_erro = coluna_atual;
+                        linha_erro = linha_atual;
+                        coluna_atual += yyleng;
+                        return UNDEF;
+                    }
+
+ /* --- Palavras reservadas e identificadores --------------------------- */
+
+{LETRA}{ALFANUM}*   {
+                        int i;
+                        coluna_atual += yyleng;
+
+                        for(i = 0; i < num_palavras_reservadas; i++)
+                        {
+                            if(strcmp(palavras_reservadas[i], yytext) == 0)
+                            {
+                                return (num_tokens - num_palavras_reservadas + i);
+                            }
+                        }
+                        guarda_lexema();
+                        return ID;
+                    }
+
+"-"?{DIGIT}+{LETRA}{ALFANUM}*   {
+                                    microc_yylval.error_msg = "Identificador nao pode comecar com numero";
+                                    coluna_erro = coluna_atual;
+                                    linha_erro = linha_atual;
+                                    coluna_atual += yyleng;
+                                    return UNDEF;
+                                }
+
+ /* --- Constantes inteiras --------------------------------------------- */
+
+"-"?{DIGIT}+        {
+                        guarda_lexema();
+                        coluna_atual += yyleng;
+                        return INTEGERCONST;
+                    }
+
+ /* --- Constantes de caractere ----------------------------------------- */
+
+'({ESCAPE}|[^'\n])?'        {
+                                if(memchr(yytext, '\0', yyleng) != NULL)
+                                {
+                                    microc_yylval.error_msg = "CHAR contem caractere nulo";
+                                    coluna_erro = coluna_atual;
+                                    linha_erro = linha_atual;
+                                    coluna_atual += yyleng;
+                                    return UNDEF;
+                                }
+                                guarda_lexema_str_char();
+                                coluna_atual += yyleng;
+                                return CHARCONST;
+                            }
+
+'({ESCAPE}|[^'\n]){2,}'     {
+                                microc_yylval.error_msg = "CHAR nao pode conter mais de um caractere";
+                                coluna_erro = coluna_atual;
+                                linha_erro = linha_atual;
+                                coluna_atual += yyleng;
+                                return UNDEF;
+                            }
+
+'({ESCAPE}|[^'\n])*\n       {
+                                microc_yylval.error_msg = "CHAR nao terminado";
+                                coluna_erro = coluna_atual;
+                                linha_erro = linha_atual;
+                                linha_atual++;
+                                coluna_atual = 1;
+                                return UNDEF;
+                            }
+
+'({ESCAPE}|[^'\n])*         {
+                                BEGIN(CHAR);
+                            }
+
+ /* --- Constantes de string -------------------------------------------- */
+
+\"([^\n"\\]|\\.)*\"     {
+                            if(memchr(yytext, '\0', yyleng) != NULL)
+                            {
+                                microc_yylval.error_msg = "STRING contem caractere nulo";
+                                coluna_erro = coluna_atual;
+                                linha_erro = linha_atual;
+                                coluna_atual += yyleng;
+                                return UNDEF;
+                            }
+                            guarda_lexema_str_char();
+                            coluna_atual += yyleng;
+                            return STRINGCONST;
+                        }
+
+\"([^\n"\\]|\\.)*\n     {
+                            microc_yylval.error_msg = "String nao terminada";
+                            coluna_erro = coluna_atual;
+                            linha_erro = linha_atual;
+                            linha_atual++;
+                            coluna_atual = 1;
+                            return UNDEF;
+                        }
+
+\"([^\n"\\]|\\.)*       {
+                            BEGIN(STRING);
+                        }
+
+ /* --- Operadores relacionais e logicos -------------------------------- */
+
+"=="                { 
+                        coluna_atual += yyleng;
+                        return EQ; 
+                    }
+
+"="                 { 
+                        coluna_atual += yyleng;
+                        return ASSIGN; 
+                    }
+
+"!="                {
+                        coluna_atual += yyleng;
+                        return NEQ;
+                    }
+
+"!"                 {
+                        coluna_atual += yyleng;
+                        return NOT;
+                    }
+
+"<="                {
+                        coluna_atual += yyleng;
+                        return LEQ;
+                    }
+
+"<"                 {
+                        coluna_atual += yyleng;
+                        return LT;
+                    }
+
+">="                {
+                        coluna_atual += yyleng;
+                        return GEQ;
+                    }
+
+">"                 {
+                        coluna_atual += yyleng;
+                        return GT;
+                    }
+
+"&&"                {
+                        coluna_atual += yyleng;
+                        return AND;
+                    }
+
+"||"                {
+                        coluna_atual += yyleng;
+                        return OR;
+                    }
+
+ /* --- Operadores aritmeticos e simbolos de pontuacao ------------------ */
+
+"+"                 { 
+                        coluna_atual += yyleng;
+                        return PLUS; 
+                    }
+
+"-"                 { 
+                        coluna_atual += yyleng;
+                        return MINUS; 
+                    }
+
+"*"                 { 
+                        coluna_atual += yyleng;
+                        return MUL; 
+                    }
+
+"/"                 { 
+                        coluna_atual += yyleng;
+                        return DIV; 
+                    }
+
+"%"                 { 
+                        coluna_atual += yyleng;
+                        return MOD; 
+                    }
+
+";"                 { 
+                        coluna_atual += yyleng;
+                        return SEMICOLON; 
+                    }
+
+","                 { 
+                        coluna_atual += yyleng;
+                        return COMMA; 
+                    }
+
+"("                 { 
+                        coluna_atual += yyleng;
+                        return LPAREN; 
+                    }
+
+")"                 { 
+                        coluna_atual += yyleng;
+                        return RPAREN; 
+                    }
+
+"{"                 { 
+                        coluna_atual += yyleng;
+                        return LBRACE; 
+                    }
+
+"}"                 { 
+                        coluna_atual += yyleng;
+                        return RBRACE; 
+                    }
+
+"["                 { 
+                        coluna_atual += yyleng;
+                        return LBRACKET; 
+                    }
+
+"]"                 { 
+                        coluna_atual += yyleng;
+                        return RBRACKET; 
+                    }
+
+ /* --- Caractere invalido -------------------------------------------------
+  * Casa com qualquer caractere que nao tenha correspondido a nenhuma
+  * regra anterior. Deve ser SEMPRE a ultima regra do arquivo. */
+
+.                   {
+                        microc_yylval.error_msg = strdup(yytext);
+                        coluna_erro = coluna_atual;
+                        linha_erro = linha_atual;
+                        coluna_atual += yyleng;
+                        return UNDEF;
+                    }
+
+%%

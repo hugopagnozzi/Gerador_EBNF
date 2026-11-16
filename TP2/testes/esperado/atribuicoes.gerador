@@ -1,0 +1,6 @@
+NAO TERMINAL  ANULAVEL  FIRST / FOLLOW
+programa      nao       FIRST  = {ID}
+                        FOLLOW = {$}
+atribuicao    nao       FIRST  = {ID}
+                        FOLLOW = {$, ID}
+status 0
